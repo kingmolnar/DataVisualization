@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta http-equiv="X-UA-Compatible" content="IE=9">
+
+<!--
+Goal: build a fast timeline browser, that allows to zoom in from years to milliseconds.
+
+Event data are in the format Time, Value, Text
+whereby
+	Time is the date/time format or UNIX time, 
+	Value has to be a quantitative value that allows aggregation (avg, max, min)
+	Text is a (HTML) string that will show information in the tool-tip
+
+
+
+
+
+Links:
+http://bl.ocks.org/mbostock/1667367
+https://github.com/mbostock/d3/wiki/SVG-Shapes#line
+http://stackoverflow.com/questions/13456241/convert-unix-epoch-to-date-object-in-r
+
+https://github.com/mbostock/d3/wiki/Selections#remove
+http://stackoverflow.com/questions/19094015/crossfilter-d3-brush-and-nvd3-integration
+http://www.w3schools.com/svg/svg_line.asp
+
+
+regarding tool tips:
+http://stackoverflow.com/questions/102457/how-to-create-an-svg-tooltip-like-box
+http://bl.ocks.org/d3noob/2e224baa7472c5e9e0e8
+https://github.com/mbostock/d3/wiki/Time-Formatting
+
+
+using canvas
+http://bocoup.com/weblog/d3js-and-canvas/
+http://bl.ocks.org/mbostock/1276463   creating a custom object for d3js
+
+-->
+
+
+	<title>Event Viewer</title>
+	<style>
+	
+	* { font-family: sans-serif;}
+
+	svg {
+	  font: 10px sans-serif;
+	}
+
+	.spike {
+		stroke: steelblue;
+		stroke-opacity: 0.1;
+		fill-opacity: 0.1;
+	}
+	
+	.area {
+	  stroke: purple;
+	  fill: steelblue;
+	  clip-path: url(#clip);
+	}
+
+	.axis path,
+	.axis line {
+	  fill: none;
+	  stroke: #000;
+	  shape-rendering: crispEdges;
+	}
+
+	.brush .extent {
+	  stroke: #f00;
+	  fill-opacity: .125;
+	  shape-rendering: crispEdges;
+	}
+	
+	
+	div.tooltip {
+	    position: absolute;    
+	    text-align: left;    
+	    /* width: 60px;    
+	    height: 28px; */       
+	    padding: 4px;    
+	    font: 12px sans-serif;    
+	    background: lightsteelblue;    
+	    border: 0px;                    
+	    border-radius: 8px;
+	}
+
+    #ccs { border: 1px red solid; background: yellow;}
+	
+	#frame { clear: both;}
+	#graph { float:left;}
+	
+	#listbox {
+		width:400px; height:500px;
+		overflow-y:scroll;
+		float:left;
+		border: 1px solid black;
+	}
+	</style>
+</head>
+<body>
+	<h1>Event Viewer 2</h1>
+		<div id="graph"></div>
+		<div id="listbox"></div>
+	<p style="clear:both;">This is the graph</p>
+	<p id="graph-stats"></p>
+	<script src="jquery-1.11.1.min.js" language="javascript"></script>
+	<script src="d3/d3.js" language="javascript"></script>
+	<script>
+	
+	var margin = {top: 10, right: 10, bottom: 100, left: 40},
+	    margin2 = {top: 430, right: 10, bottom: 20, left: 40},
+	    width = 1440 - margin.left - margin.right,
+	    height = 500 - margin.top - margin.bottom,
+	    height2 = 500 - margin2.top - margin2.bottom;
+
+	var parseDate = d3.time.format("%U").parse;
+	var formatDate = d3.time.format("%Y-%m-%d %H:%M:%S");
+
+	var x = d3.time.scale().range([0, width]),
+	    x2 = d3.time.scale().range([0, width]),
+	    y = d3.scale.linear().range([height, 0]),
+	  	y2 = d3.scale.linear().range([height2, 0]);
+
+	var xAxis = d3.svg.axis().scale(x).orient("bottom"),
+	    xAxis2 = d3.svg.axis().scale(x2).orient("bottom"),
+	    yAxis = d3.svg.axis().scale(y).orient("left");
+
+	var brush = d3.svg.brush()
+	    .x(x2)
+	    .on("brush", brushed);
+
+	var area = d3.svg.line()
+	   // .interpolate("linear")
+	    .x(function(d) { return x(d.frame_time_epoch); })
+	    .y(function(d) { return y(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise); });
+	    //.y0(height)
+	    //.y1(function(d) { return y(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise); });
+
+	var area2 = d3.svg.area()
+	    .interpolate("monotone")
+	    .x(function(d) { return x2(d.frame_time_epoch); })
+	    .y0(height2)
+	    .y1(function(d) { return y2(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise); });
+
+	var svg = d3.select("#graph").append("svg")
+	    .attr("width", width + margin.left + margin.right)
+	    .attr("height", height + margin.top + margin.bottom);
+	
+	d3.select("body").on("keydown", function() {
+		//if (!brush.empty()) {
+			var ext = brush.empty() ? x2.domain() : brush.extent();
+			var del = ext[1].getTime()-ext[0].getTime();
+			console.log("delta="+del);
+			if (d3.event.keyCode==27) {
+				brush.clear();
+				ext = x2.domain();
+				x.domain(x2.domain());
+			} else {
+				if (d3.event.shiftKey) del /=2.0;
+				console.log("ext="+ext+" del="+del)
+				switch(d3.event.keyCode) {
+				case 37: // left
+					brush.extent([new Date(ext[0].getTime()-del), new Date(ext[1].getTime()-del)] );
+					//ext[0] -=del; ext[1] -= del;
+					//brush.extent(ext);
+					break;
+				case 38: // up == zoom in
+					brush.extent([ext[0]+del/10, ext[1]-del/10]);
+					//ext[0] += del/10; ext[1] -= del/10;
+					//brush.extent(ext);
+					break;
+				case 39: // right
+					brush.extent([ext[0]+del, ext[1]+del]);
+					//ext[0] +=del; ext[1] += del;
+					//brush.extent(ext);
+					break;
+				case 40: // down == zoom out
+					brush.extent([ext[0]-del/10, ext[1]+del/10]);
+					//ext[0] -= del/10; ext[1] += del/10;
+					//brush.extent(ext);
+					break;
+				}
+				console.log("new brush extent="+brush.extent());
+				
+	  	  
+			}
+		
+			
+			// } // !brush.empty()
+		x.domain(brush.empty() ? x2.domain() : brush.extent());
+		//focus.select(".area").attr("d", area);
+		global_mypath();
+		focus.select(".x.axis").call(xAxis);
+	
+		
+		
+		//context.select(".brush").remove();
+  	  	/* context.append("g")
+  	      .attr("class", "x brush")
+  	      .call(brush)
+  	    .selectAll("rect")
+  	      .attr("y", -6)
+  	      .attr("height", height2 + 7);  */
+		
+	 });
+
+	svg.append("defs").append("clipPath")
+	    .attr("id", "clip")
+	  .append("rect")
+	    .attr("width", width)
+	    .attr("height", height);
+
+	var focus = svg.append("g")
+	    .attr("class", "focus")
+	    .attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+
+	var context = svg.append("g")
+	    .attr("class", "context")
+	    .attr("transform", "translate(" + margin2.left + "," + margin2.top + ")");
+		
+	var context_brush;
+		 
+	var div = d3.select("#graph")
+	    .append("div")  // declare the tooltip div 
+	    .attr("class", "tooltip")
+	    .style("opacity", 0);
+	
+	var global_data;
+	var global_mypath;
+	
+	//var datafile = "data_kodos_2014-09-17.tsv";
+	var datafile = "data2.tsv";
+	d3.tsv(datafile, type, function(error, data) {
+		data.forEach(function(d) {
+			d.frame_time_epoch = new Date(d.frame_time_epoch*1000);
+		})
+		global_data = data;
+	  x.domain(d3.extent(data.map(function(d) { return d.frame_time_epoch; })));
+	  y.domain([0, d3.max(data.map(function(d) {
+		  return d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise;
+	  }))]);
+	  x2.domain(x.domain());
+	  y2.domain(y.domain());
+
+	  /* focus.append("path")
+	      .datum(data)
+	      .attr("class", "area")
+	      .attr("d", area); */
+	  
+	 focus.append("g").attr("id", "myfocus") 
+	 global_mypath = function() {
+		 console.log("calling global mypath");
+		 var N = 0;
+		 //focus.select("g.myfocus").remove();
+		 //focus.append("g")
+			  //.attr("class", "myfocus")
+		 var sub_data = data.filter( function(d) {
+				    var res = brush.empty() 
+						? true : (d.frame_time_epoch>=brush.extent()[0] && d.frame_time_epoch<=brush.extent()[1]); 
+					if (res) N++;
+					return res;
+			   });
+			   
+	     d3.select("#graph-stats").html(""+N+" events");
+		 
+		 var fls = focus.selectAll("line").data(sub_data, function(d) { return d.frame_time_epoch*1000;} );
+		 
+		 // update x-pos if 'line' already exists, all other attributes are still there
+ 	 	 fls.attr("x1", function(d) { return x(d.frame_time_epoch); })
+ 	 		.attr("x2", function(d) { return x(d.frame_time_epoch); })
+ 		    ;	  
+		
+		 // now add dom or svg elements for additional data points	
+		 fls.enter().append("line")
+		      .attr("class", "spike")
+			  .attr("y1", function(d) { return y(0.0); })
+			  .attr("y2", function(d) { return y(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise); })
+		      .attr("x1", function(d) { return x(d.frame_time_epoch); })
+		      .attr("x2", function(d) { return x(d.frame_time_epoch); })
+			  .on("mouseover", function(d) {
+				  		  d3.select(this).style("stroke", "green");
+			              div.transition()
+			                  .duration(200)    
+			                  .style("opacity", .8); 
+			              //div.style("opacity", 0.8);
+						  //var formatDate = d3.time.format("%Y-%m-%d %H:%M:%S");
+						  var iso = d3.time.format("%Y-%m-%dT%H:%M:%S.%LZ");
+			              div.html(d.wlan_addr+"<br />\n"
+									+ "Channel "+d.radiotap_channel_freq+" MHz, "
+									+ "Type "+d.wlan_fc_type_subtype+"<br />\n"
+									+ d.frame_time_epoch
+									)     
+			                  .style("left", (d3.event.pageX) + "px")             
+			                  .style("top", (d3.event.pageY - 28) + "px")
+							  ;
+			              }
+					  )
+			  .on("mouseout", function(d) {
+				  div.transition(500).style("opacity", 0.0);
+			  })
+			  .on("mousedown", function(d) {
+				  d3.select(this).style("stroke", "red");
+				  console.log("click");
+			  })
+			  ;
+			  
+		// clear out dom and svg elements that don't have data points 	
+		fls.exit().remove();
+			
+	  	/* focus.selectAll("line")
+		      .data(data.filter( function(d) {
+				    var res = brush.empty() 
+						? true : (d.frame_time_epoch>=brush.extent()[0] && d.frame_time_epoch<=brush.extent()[1]); 
+					if (res) N++;
+					return res;
+			   }))
+			  .enter()
+			  .append("line")
+		      .attr("class", "spike")
+			  .attr("y1", function(d) { return y(0.0); })
+			  .attr("y2", function(d) { return y(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise); })
+		      .attr("x1", function(d) { return x(d.frame_time_epoch); })
+		      .attr("x2", function(d) { return x(d.frame_time_epoch); })
+			  .on("mouseover", function(d) {
+				  		  d3.select(this).style("color", "green");
+			              div.transition()
+			                  .duration(500)    
+			                  .style("opacity", 0);
+			              div.transition()
+			                  .duration(200)    
+			                  .style("opacity", .8); 
+			              //div.style("opacity", 0.8);
+						  //var formatDate = d3.time.format("%Y-%m-%d %H:%M:%S");
+						  var iso = d3.time.format("%Y-%m-%dT%H:%M:%S.%LZ");
+			              div.html(d.wlan_addr+"<br />\n"
+									+ "Channel "+d.radiotap_channel_freq+" MHz, "
+									+ "Type "+d.wlan_fc_type_subtype+"<br />\n"
+									+ d.frame_time_epoch
+									)     
+			                  .style("left", (d3.event.pageX) + "px")             
+			                  .style("top", (d3.event.pageY - 28) + "px")
+							  ;
+			              }
+					  )
+			  .on("mouseout", function(d) {
+				  div.style("opacity", 0.0);
+			  })
+			  .on("mousedown", function(d) {
+				  d3.select(this).style("stroke", "red");
+				  console.log("click");
+			  })
+			  
+			  ;
+			  
+			  */
+			 
+			  
+			  
+			  // list first 100
+			  console.log("redo list")
+			  var max_count=100;
+	 		 d3.select("#listbox")
+			 	  .html("<b>Events</b>")
+			 	  .selectAll("p")
+	 		      .data(data.filter(function(d) {
+					  max_count--;
+					  return max_count>0 ? (
+						  brush.empty() ?
+					   		true : (d.frame_time_epoch>=brush.extent()[0] && d.frame_time_epoch<=brush.extent()[1])
+						) : false;
+				   }))
+	 			  .enter()
+	 			  .append("p")
+				  .html( function(d) { return "T="+d.frame_time_epoch; })
+					;
+			  
+			  
+	 } // end of global_mypath
+		  
+	  global_mypath();
+			  
+	  //	focus.append("g")
+//	.selectAll("line")
+//	.data(data)
+//	.enter()
+//	.append("line")
+//	.attr("class",
+//	.attr("y1",
+//	.attr("y2",
+//	.attr("x1",
+//	.attr("x2",
+//	;
+
+
+	  focus.append("g")
+	      .attr("class", "x axis")
+	      .attr("transform", "translate(0," + height + ")")
+	      .call(xAxis);
+
+	  focus.append("g")
+	      .attr("class", "y axis")
+	      .call(yAxis);
+
+
+		  // creating a new context panel using canvas
+	 /*  context.append("path")
+	      .datum(data)
+	      .attr("class", "area")
+	      .attr("d", area2); */
+
+	 	context.append("g")
+			  .selectAll("line")
+		      .data(data)
+			  .enter()
+			  .append("line")
+			      .attr("class", "spike")
+				  .attr("y1", function(d) { return y2(0.0); })
+				  .attr("y2", function(d) { return y2(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise); })
+			      .attr("x1", function(d) { return x(d.frame_time_epoch); })
+			      .attr("x2", function(d) { return x(d.frame_time_epoch); })
+			  ;
+			 
+
+
+	 
+	  /* var chart = context.append("svg:canvas")
+	  	.attr("width", width)
+	  	.attr("height", height2)
+		.attr("id", "ccs2")
+		.call(function () {
+		  	  var c = document.getElementById("ccs2");
+		  	  var chart_context = c.getContext("2d");
+	  
+		  	  //var chart_context = this.node().getContext("2d");
+	  
+	  
+		  	  data.forEach(function(d, i){
+		  		  chart_context.beginPath();
+		  		  chart_context.moveTo( x(d.frame_time_epoch), y2(0.0));
+		  		  chart_context.lineTo( x(d.frame_time_epoch), y2(d.radiotap_dbm_antsignal-d.radiotap_dbm_antnoise));
+		  		  chart_context.strokeStyle = "red";
+		  		  chart_context.stroke();
+		  		  chart_context.closePath();
+		  
+		  	  });
+			
+		})
+		;
+		*/
+	  
+	  context.append("g")
+	      .attr("class", "x axis")
+	      .attr("transform", "translate(0," + height2 + ")")
+	      .call(xAxis2);
+
+	  context_brush = context.append("g")
+	      .attr("class", "x brush")
+	      .call(brush)
+	    .selectAll("rect")
+	      .attr("y", -6)
+	      .attr("height", height2 + 7); 
+	}); // reading data
+	
+	function brushed() {
+	  x.domain(brush.empty() ? x2.domain() : brush.extent());
+	  //console.log("min="+brush.extent()[0]+" max="+brush.extent()[1]);
+	  //focus.select(".area").attr("d", area);
+	  global_mypath();
+	  focus.select(".x.axis").call(xAxis);
+	}
+
+	function type(d) {
+	//  d.date = parseDate(d.date);
+	//  d.price = +d.price;
+	  return d;
+	}
+	
+	</script>
+</body>
+</html>
